@@ -15,6 +15,7 @@ UFFmpegMediaPlayer::UFFmpegMediaPlayer()
 {
     m_PlayerState = EPlayerState::Stopped;
     m_bStopThreads = false;
+    m_AudioComponent = nullptr;
 }
 
 UFFmpegMediaPlayer::~UFFmpegMediaPlayer()
@@ -26,19 +27,19 @@ void UFFmpegMediaPlayer::BeginDestroy()
 {
     Super::BeginDestroy();
 
-    Close();
+    Stop();
 }
 // --- Public API Implementation ---
 
 bool UFFmpegMediaPlayer::Open(const FString& FilePath)
 {
-    Close();
+    Stop();
 
     m_bStopThreads = false;
 
     if (m_PlayerState != EPlayerState::Stopped)
     {
-        UE_LOG(LogTemp, Warning, TEXT("FFmpegMediaPlayer: Player is already open. Please Close() it first."));
+        UE_LOG(LogTemp, Warning, TEXT("FFmpegMediaPlayer: Player is already open. Please Stop() it first."));
         return false;
     }
     FString PackagePath;
@@ -115,6 +116,12 @@ bool UFFmpegMediaPlayer::Open(const FString& FilePath)
     m_AudioSoundWave->SoundGroup = SOUNDGROUP_Music;
     m_AudioSoundWave->bLooping = false;
 
+    if (UWorld* World = GetWorld())
+    {
+        // *** CORRECCIÓN: Crear y almacenar el componente de audio en lugar de llamar a PlaySound2D directamente ***
+        m_AudioComponent = UGameplayStatics::CreateSound2D(World, m_AudioSoundWave, 1.0f, 1.0f, 0.0f, nullptr, true);
+    }
+
     AVChannelLayout out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
     swr_alloc_set_opts2(&m_SwrCtx, &out_ch_layout, AV_SAMPLE_FMT_S16, m_AudioCodecCtx->sample_rate,
         &m_AudioCodecCtx->ch_layout, m_AudioCodecCtx->sample_fmt, m_AudioCodecCtx->sample_rate, 0, nullptr);
@@ -126,7 +133,7 @@ bool UFFmpegMediaPlayer::Open(const FString& FilePath)
     m_FrameData.SetNumUninitialized(num_bytes);
     FrameDataCopy.SetNumUninitialized(m_FrameData.Num());
 
-    UGameplayStatics::PlaySound2D(GetWorld(), m_AudioSoundWave, 5.0f);
+   // UGameplayStatics::PlaySound2D(GetWorld(), m_AudioSoundWave, 5.0f);
 
     // 6. Start threads
     m_bStopThreads = false;
@@ -150,16 +157,21 @@ void UFFmpegMediaPlayer::Play()
     }
     else
     {
-        Close();
+        Stop();
     }
     m_PlayerState = EPlayerState::Playing;
 
-   
+    if (m_AudioComponent)
+    {
+        m_AudioComponent->Play();
+    }
+
 
     // --- 使用 FRunnable 启动线程 ---
     m_DemuxerRunnable = MakeUnique<FFFmpegRunnable>(TEXT("FFmpegDemuxerThread"), [this]() { this->DemuxerThread(); });
-    m_VideoRunnable = MakeUnique<FFFmpegRunnable>(TEXT("FFmpegVideoThread"), [this]() { this->VideoDecodeThread(); });
     m_AudioRunnable = MakeUnique<FFFmpegRunnable>(TEXT("FFmpegAudioThread"), [this]() { this->AudioDecodeThread(); });
+    m_VideoRunnable = MakeUnique<FFFmpegRunnable>(TEXT("FFmpegVideoThread"), [this]() { this->VideoDecodeThread(); });
+    
     
 }
 
@@ -170,9 +182,45 @@ void UFFmpegMediaPlayer::Pause()
         m_PlayerState = EPlayerState::Paused;
         UE_LOG(LogTemp, Log, TEXT("Player PAUSED"));
     }
+    if (IsValid(m_AudioSoundWave))
+    {
+        if (m_AudioComponent && m_AudioComponent->IsPlaying())
+        {
+            m_AudioComponent->SetPaused(true);
+        }
+
+    }
 }
 
-void UFFmpegMediaPlayer::Close()
+
+void UFFmpegMediaPlayer::Resume()
+{
+    if (m_PlayerState == EPlayerState::Paused)
+    {
+        m_PlayerState = EPlayerState::Playing;
+        UE_LOG(LogTemp, Log, TEXT("Player Playing"));
+    }
+
+    if (m_AudioComponent)
+    {
+        m_AudioComponent->SetPaused(false);
+    }
+//     if (!GEngine || !GEngine->UseSound())
+//     {
+//         return;
+//     }
+// 
+//     UWorld* ThisWorld = GetWorld();
+// 
+//     if (ThisWorld && ThisWorld->GetAudioDevice())
+//     {
+//         // Stop the sound wave from playing
+//         ThisWorld->GetAudioDevice()->PauseActiveSound(m_AudioSoundWave);
+//     }
+
+}
+
+void UFFmpegMediaPlayer::Stop()
 {
     if (m_PlayerState == EPlayerState::Stopped)
     {
@@ -184,6 +232,8 @@ void UFFmpegMediaPlayer::Close()
 
     m_VideoPacketQueue.Stop();
     m_AudioPacketQueue.Stop();
+
+
 
     if (m_AudioSoundWave && IsValid(m_AudioSoundWave))
     {
@@ -376,12 +426,17 @@ void UFFmpegMediaPlayer::AudioDecodeThread()
     FScopeLock Lock(&FFmpegResourceCriticalSectionSound);
     while (!m_bStopThreads.load(std::memory_order_acquire))
     {
-        if (m_PlayerState == EPlayerState::Paused)
+        while (m_PlayerState == EPlayerState::Paused && !m_bStopThreads.load(std::memory_order_acquire))
         {
             FPlatformProcess::Sleep(0.1f);
-            LastFrameTime = FPlatformTime::Seconds();
-            continue;
         }
+
+//         if (m_PlayerState == EPlayerState::Paused)
+//         {
+//             FPlatformProcess::Sleep(0.1f);
+//             LastFrameTime = FPlatformTime::Seconds();
+//             continue;
+//         }
 
         if (m_PlayerState.load(std::memory_order_acquire) == EPlayerState::Stopped)
         {
@@ -401,6 +456,10 @@ void UFFmpegMediaPlayer::AudioDecodeThread()
                 if (m_PlayerState.load(std::memory_order_acquire) == EPlayerState::Stopped)
                 {
                     break;
+                }
+                while (m_PlayerState == EPlayerState::Paused && !m_bStopThreads.load(std::memory_order_acquire))
+                {
+                    FPlatformProcess::Sleep(0.1f);
                 }
 
                 // Ensure the SwrContext is valid and configured for this frame's format
@@ -442,6 +501,11 @@ void UFFmpegMediaPlayer::AudioDecodeThread()
                         TArray<uint8> AudioDataCopy(ResampledBuffer.GetData(), real_out_buffer_size);
                         AsyncTask(ENamedThreads::GameThread, [this, AudioDataCopy]()
                             {
+                                if (m_PlayerState == EPlayerState::Paused)
+                                {
+                                    return;
+                                }
+
                                 if (IsValid(m_AudioSoundWave))
                                 {
                                     m_AudioSoundWave->QueueAudio(AudioDataCopy.GetData(), AudioDataCopy.Num());
@@ -669,6 +733,7 @@ void UFFmpegMediaPlayer::Cleanup()
     // UE Objects will be garbage collected. Setting them to null is good practice.
     m_VideoTexture = nullptr;
     m_AudioSoundWave = nullptr;
+    m_AudioComponent = nullptr;
 }
 
 double UFFmpegMediaPlayer::GetAudioClock()
@@ -729,6 +794,12 @@ void UFFmpegMediaPlayer::UpdateTexture(const AVFrame* RgbFrame)
 
     AsyncTask(ENamedThreads::GameThread, [this, LocalCopyOfData]()
         {
+
+            if (m_PlayerState.load(std::memory_order_acquire) == EPlayerState::Stopped)
+            {
+                return;
+            }
+
             if (!m_VideoTexture || !IsValid(m_VideoTexture) || !m_VideoTexture->GetResource())
             {
                 return;

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <condition_variable>
 #include "HAL/CriticalSection.h" 
+#include "Runtime/Engine/Classes/Components/AudioComponent.h"
 // Forward declarations for Unreal Engine types
 class UTexture2D;
 class USoundWaveProcedural;
@@ -119,9 +120,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "FFmpegMediaPlayer")
     void Pause();
 
+    /** Pauses playback. */
+    UFUNCTION(BlueprintCallable, Category = "FFmpegMediaPlayer")
+    void Resume();
+
     /** Stops playback and releases resources. */
     UFUNCTION(BlueprintCallable, Category = "FFmpegMediaPlayer")
-    void Close();
+    void Stop();
 
     /** Returns the current state of the player. */
     UFUNCTION(BlueprintPure, Category = "FFmpegMediaPlayer")
@@ -134,6 +139,9 @@ public:
     /** Returns the procedural sound wave for audio playback. */
     UFUNCTION(BlueprintPure, Category = "FFmpegMediaPlayer")
     USoundWaveProcedural* GetAudioSoundWave() const;
+
+    UPROPERTY()
+    TObjectPtr<UAudioComponent> m_AudioComponent;
 
     /** Gets the video dimensions. */
     UFUNCTION(BlueprintPure, Category = "FFmpegMediaPlayer")
