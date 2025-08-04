@@ -110,7 +110,7 @@ public:
      * @return True if the file was opened successfully, false otherwise.
      */
     UFUNCTION(BlueprintCallable, Category = "FFmpegMediaPlayer")
-    bool Open(const FString& FilePath);
+    bool SetMedia(const FString& FilePath);
 
     /** Starts or resumes playback. */
     UFUNCTION(BlueprintCallable, Category = "FFmpegMediaPlayer")

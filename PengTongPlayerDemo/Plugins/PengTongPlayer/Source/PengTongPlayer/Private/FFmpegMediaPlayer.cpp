@@ -31,7 +31,7 @@ void UFFmpegMediaPlayer::BeginDestroy()
 }
 // --- Public API Implementation ---
 
-bool UFFmpegMediaPlayer::Open(const FString& FilePath)
+bool UFFmpegMediaPlayer::SetMedia(const FString& FilePath)
 {
     Stop();
 
